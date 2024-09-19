@@ -1,0 +1,120 @@
+name: AJCL CICD PIPELINE
+
+on:
+  push:
+    branches:
+      - ajcl  # Trigger on push to the ajcl branch
+
+jobs:
+  build:
+    name: Build Application
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Set up Node.js
+        uses: actions/setup-node@v2
+        with:
+          node-version: '18'
+
+      - name: Install Dependencies
+        run: |
+          npm install
+
+      - name: Build Frontend
+        run: |
+          npm run build
+
+      - name: Run Backend Build (Docker)
+        run: |
+          docker build -t ajcl-app:latest .
+
+  test:
+    name: Run Tests
+    runs-on: ubuntu-latest
+    needs: build
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Run Unit and Integration Tests
+        run: |
+          npm test
+          docker-compose -f docker-compose.test.yml up --abort-on-container-exit
+
+  deploy_staging:
+    name: Deploy to Staging
+    runs-on: ubuntu-latest
+    needs: test
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Start SSH agent and add key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Deploy to Staging
+        run: |
+          ssh -o StrictHostKeyChecking=no -i private_key -p 2221 ubuntu@xxxxxxx '
+            docker-compose down
+            docker-compose up -d
+          '
+
+  approve_production:
+    name: Manual Approval for Production
+    runs-on: ubuntu-latest
+    needs: deploy_staging
+
+    steps:
+      - name: Wait for Manual Approval
+        uses: hmarr/auto-approve-action@v2
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+        if: github.event.inputs.approved == 'true'
+
+  deploy_production:
+    name: Deploy to Production
+    runs-on: ubuntu-latest
+    needs: approve_production
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v2
+
+      - name: Start SSH agent and add key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Deploy to Production
+        run: |
+          ssh -o StrictHostKeyChecking=no -i private_key -p 2221 ubuntu@xxxxxxx '
+            docker-compose down
+            docker-compose up -d
+          '
+
+  rollback:
+    name: Rollback on Failure
+    runs-on: ubuntu-latest
+    if: failure()
+    steps:
+      - name: Checkout previous stable version
+        uses: actions/checkout@v2
+
+      - name: Start SSH agent and add key
+        uses: webfactory/ssh-agent@v0.5.3
+        with:
+          ssh-private-key: ${{ secrets.EC2_SSH_PRIVATE_KEY }}
+
+      - name: Rollback Deployment
+        run: |
+          ssh -o StrictHostKeyChecking=no -i private_key -p 2221 ubuntu@xxxxxxx '
+            docker-compose down
+            docker-compose up -d previous-stable-version
+          '
